@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/minio/minio/internal/filelock"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -30,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/minio/minio/internal/filelock"
 
 	jsoniter "github.com/json-iterator/go"
 	xioutil "github.com/minio/minio/internal/ioutil"
@@ -116,23 +117,33 @@ func (fs *PANFSObjects) decodePartFile(name string) (partNumber int, etag string
 
 // Appends parts to an appendFile sequentially.
 func (fs *PANFSObjects) backgroundAppend(ctx context.Context, bucket, object, uploadID string) {
-
 	logger.GetReqInfo(ctx).AppendTags("uploadID", uploadID)
 	bucketPath, err := fs.getBucketPanFSPath(ctx, bucket)
 	if err != nil {
 		logger.LogIf(ctx, err, logger.Application)
 		return
 	}
-	file := fs.appendFileMap[uploadID]
 	fs.appendFileMapMu.Lock()
+	file := fs.appendFileMap[uploadID]
+	hasParts := false
 	if file == nil {
 		file = fs.getPanFSMultipartAppendFile(ctx, bucketPath, object, uploadID)
-		if file == nil {
-			// TODO: log error or just skip?
-			return
+		if file != nil {
+			fs.appendFileMap[uploadID] = file
 		}
-		fs.appendFileMap[uploadID] = file
 	} else {
+		hasParts = true
+	}
+	fs.appendFileMapMu.Unlock()
+
+	if file == nil {
+		return
+	}
+
+	file.flock.Lock()
+	defer file.flock.Unlock()
+
+	if hasParts {
 		fi, err := fsStatFile(ctx, pathJoin(fs.getUploadIDDir(bucketPath, bucket, object, uploadID), fs.metaJSONFile))
 		if err != nil {
 			logger.LogIf(ctx, err, logger.Application)
@@ -153,11 +164,6 @@ func (fs *PANFSObjects) backgroundAppend(ctx context.Context, bucket, object, up
 			file.parts = fsMeta.Appended
 		}
 	}
-	fs.appendFileMapMu.Unlock()
-
-	file.flock.Lock()
-	//file.Lock()
-	defer file.flock.Unlock()
 
 	// Since we append sequentially nextPartNumber will always be len(file.parts)+1
 	nextPartNumber := len(file.parts) + 1
@@ -811,8 +817,8 @@ func (fs *PANFSObjects) CompleteMultipartUpload(ctx context.Context, bucket stri
 	fs.appendFileMapMu.Unlock()
 
 	if file != nil {
-		file.Lock()
-		defer file.Unlock()
+		file.flock.Lock()
+		defer file.flock.Unlock()
 		// Verify that appendFile has all the parts.
 		if len(file.parts) == len(parts) {
 			for i := range parts {

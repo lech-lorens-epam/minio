@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/minio/minio/internal/filelock"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -36,6 +35,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/minio/minio/internal/filelock"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/madmin-go"
@@ -114,7 +115,6 @@ type PANFSObjects struct {
 
 // Represents the background append file.
 type panfsAppendFile struct {
-	sync.Mutex
 	flock        *filelock.FileLock
 	lastModified time.Time
 	parts        []PartInfo // List of parts appended.
